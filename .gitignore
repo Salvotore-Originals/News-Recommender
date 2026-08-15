@@ -1,0 +1,39 @@
+# Data
+data/raw/
+data/processed/
+data/features/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model files
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+
+# Archives
+*.zip
+*.tar
+*.gz
+
+# Environment variables
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
