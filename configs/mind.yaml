@@ -1,0 +1,9 @@
+dataset_name: mind
+
+raw_dir: data/raw/mind
+processed_dir: data/processed/mind
+features_dir: data/features/mind
+
+splits:
+  train: train
+  validation: dev
