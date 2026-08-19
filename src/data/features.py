@@ -9,6 +9,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 
+RAW_MIND = ROOT / "data" / "raw" / "mind"
+
 PROCESSED_MIND = (
     ROOT
     / "data"
@@ -21,16 +23,6 @@ FEATURE_MIND = (
     / "data"
     / "features"
     / "mind"
-)
-
-ARTICLES_PATH = (
-    PROCESSED_MIND
-    / "articles.parquet"
-)
-
-INTERACTIONS_PATH = (
-    PROCESSED_MIND
-    / "interactions.parquet"
 )
 
 HISTORY_PATH = (
@@ -46,21 +38,51 @@ TRAIN_PATH = (
 
 
 # ============================================================
-# CREATE ARTICLE FEATURES
+# RAW MIND NEWS LOADER
 # ============================================================
 
-def build_article_features():
-    print("\n[1/3] Building article features...")
+def load_mind_news(split: str) -> pd.DataFrame:
 
-    articles = pd.read_parquet(
-        ARTICLES_PATH
+    news_path = (
+        RAW_MIND
+        / split
+        / "news.tsv"
     )
 
-    # Replace missing text fields.
-    articles["abstract"] = (
-        articles["abstract"]
-        .fillna("")
+    if not news_path.exists():
+        raise FileNotFoundError(
+            f"MIND news file not found:\n{news_path}"
+        )
+
+    columns = [
+        "article_id",
+        "category",
+        "subcategory",
+        "title",
+        "abstract",
+        "url",
+        "title_entities",
+        "abstract_entities",
+    ]
+
+    print(
+        f"\nLoading {split} news..."
+    )
+
+    articles = pd.read_csv(
+        news_path,
+        sep="\t",
+        header=None,
+        names=columns,
+        quoting=3,
+        keep_default_na=False,
+        dtype=str,
+    )
+
+    articles["article_id"] = (
+        articles["article_id"]
         .astype(str)
+        .str.strip()
     )
 
     articles["title"] = (
@@ -69,14 +91,63 @@ def build_article_features():
         .astype(str)
     )
 
-    # Combined text for lexical retrieval.
+    articles["abstract"] = (
+        articles["abstract"]
+        .fillna("")
+        .astype(str)
+    )
+
+    articles["category"] = (
+        articles["category"]
+        .fillna("")
+        .astype(str)
+    )
+
+    articles["subcategory"] = (
+        articles["subcategory"]
+        .fillna("")
+        .astype(str)
+    )
+
     articles["text"] = (
         articles["title"]
         + " "
         + articles["abstract"]
     ).str.strip()
 
-    # Keep only reusable modelling fields.
+    # Remove accidental duplicate article IDs.
+    articles = (
+        articles
+        .drop_duplicates(
+            subset=["article_id"],
+            keep="first",
+        )
+        .reset_index(drop=True)
+    )
+
+    print(
+        f"       Raw articles: {len(articles):,}"
+    )
+
+    return articles
+
+
+# ============================================================
+# CREATE SPLIT-SPECIFIC ARTICLE FEATURES
+# ============================================================
+
+def build_article_features(
+    split: str,
+) -> pd.DataFrame:
+
+    print(
+        f"\n[{split.upper()}] Building article features..."
+    )
+
+    articles = load_mind_news(
+        split
+    )
+
     columns = [
         "article_id",
         "category",
@@ -88,9 +159,14 @@ def build_article_features():
         "abstract_entities",
     ]
 
-    articles = articles[columns]
+    articles = articles[
+        columns
+    ]
 
-    output = FEATURE_MIND / "articles.parquet"
+    output = (
+        FEATURE_MIND
+        / f"{split}_articles.parquet"
+    )
 
     articles.to_parquet(
         output,
@@ -113,7 +189,10 @@ def build_article_features():
 # ============================================================
 
 def build_user_features():
-    print("\n[2/3] Building user features...")
+
+    print(
+        "\n[3/4] Building user features..."
+    )
 
     history = pd.read_parquet(
         HISTORY_PATH,
@@ -144,7 +223,10 @@ def build_user_features():
         .reset_index()
     )
 
-    output = FEATURE_MIND / "users.parquet"
+    output = (
+        FEATURE_MIND
+        / "users.parquet"
+    )
 
     user_features.to_parquet(
         output,
@@ -168,7 +250,11 @@ def build_user_features():
 # ============================================================
 
 def build_article_stats():
-    print("\n[3/3] Building article statistics from TRAIN only...")
+
+    print(
+        "\n[4/4] Building article statistics "
+        "from TRAIN only..."
+    )
 
     train = pd.read_parquet(
         TRAIN_PATH,
@@ -178,7 +264,6 @@ def build_article_stats():
         ],
     )
 
-    # Number of times each article was shown.
     impressions = (
         train
         .groupby("article_id")
@@ -186,7 +271,6 @@ def build_article_stats():
         .rename("impression_count")
     )
 
-    # Number of clicks for each article.
     clicks = (
         train
         .groupby("article_id")["clicked"]
@@ -212,7 +296,6 @@ def build_article_stats():
         .astype("int64")
     )
 
-    # CTR calculated only from training data.
     stats["ctr"] = (
         stats["click_count"]
         / stats["impression_count"]
@@ -265,26 +348,52 @@ def main():
         exist_ok=True,
     )
 
-    articles = build_article_features()
+    # --------------------------------------------------------
+    # Build separate article stores
+    # --------------------------------------------------------
+
+    train_articles = build_article_features(
+        "train"
+    )
+
+    dev_articles = build_article_features(
+        "dev"
+    )
+
+    # --------------------------------------------------------
+    # User features
+    # --------------------------------------------------------
 
     users = build_user_features()
 
+    # --------------------------------------------------------
+    # Training statistics
+    # --------------------------------------------------------
+
     article_stats = build_article_stats()
+
+    # --------------------------------------------------------
+    # Summary
+    # --------------------------------------------------------
 
     print("\n" + "=" * 70)
     print("FEATURE STORE COMPLETE")
     print("=" * 70)
 
     print(
-        f"\nArticles: {len(articles):,}"
+        f"\nTrain articles: {len(train_articles):,}"
     )
 
     print(
-        f"Users with history: {len(users):,}"
+        f"Dev articles:   {len(dev_articles):,}"
     )
 
     print(
-        f"Articles with train statistics: "
+        f"Users:          {len(users):,}"
+    )
+
+    print(
+        f"Train statistics: "
         f"{len(article_stats):,}"
     )
 
