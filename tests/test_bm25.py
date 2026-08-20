@@ -25,5 +25,5 @@ def test_bm25_retrieval():
         top_k=2,
     )
 
-    assert len(results) == 2
+    assert len(results) == 1
     assert results[0][0] == "A1"

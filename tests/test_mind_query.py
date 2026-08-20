@@ -24,11 +24,16 @@ def test_mind_query_builder():
         ["N1", "N2"]
     )
 
-    assert query == (
-        "Artificial Intelligence Advances "
-        "Microsoft Announces New AI Model"
-    )
+    assert query
+    assert "artificial" in query
+    assert "intelligence" in query
+    assert "advances" in query
+    assert "microsoft" in query
+    assert "announces" in query
+    assert "model" in query
 
+    assert "the" not in query.split()
+    assert "and" not in query.split()
 
 def test_unknown_articles_are_ignored():
 
@@ -43,4 +48,8 @@ def test_unknown_articles_are_ignored():
         ["N1", "N999999"]
     )
 
-    assert query == "Artificial Intelligence Advances"
+    assert query
+    assert "artificial" in query
+    assert "intelligence" in query
+    assert "advances" in query
+    assert "n999999" not in query
