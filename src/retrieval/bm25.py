@@ -363,3 +363,184 @@ class BM25Retriever:
             for doc_index, score
             in ranked_candidates
         ]
+
+        # ======================================================
+    # SCORE SPECIFIC CANDIDATES
+    # ======================================================
+
+    def score_candidates(
+        self,
+        query: str,
+        article_ids: Sequence[str],
+    ) -> list[tuple[str, float]]:
+        """
+        Score a specified set of article candidates with BM25.
+
+        Unlike search(), this method does not perform candidate
+        retrieval. Every requested article receives a BM25 score.
+
+        This is useful for ranking experiments where an external
+        candidate set, such as the MIND impression candidates,
+        must be kept fixed.
+
+        Parameters
+        ----------
+        query:
+            Lexical query.
+
+        article_ids:
+            Article IDs that must be scored.
+
+        Returns
+        -------
+        list[tuple[str, float]]
+            Article ID and BM25 score for every requested
+            candidate, preserving the input order.
+
+        Notes
+        -----
+        Articles that contain none of the query terms receive
+        a score of 0.0.
+        """
+
+        if not query or not query.strip():
+            return [
+                (
+                    str(article_id),
+                    0.0,
+                )
+                for article_id in article_ids
+            ]
+
+        query_tokens = self.tokenize(query)
+
+        if not query_tokens:
+            return [
+                (
+                    str(article_id),
+                    0.0,
+                )
+                for article_id in article_ids
+            ]
+
+        query_counts = Counter(
+            query_tokens
+        )
+
+        # --------------------------------------------------
+        # Article ID -> document index
+        # --------------------------------------------------
+
+        article_to_index = {
+            str(article_id): index
+            for index, article_id
+            in enumerate(self.article_ids)
+        }
+
+        requested_ids = [
+            str(article_id)
+            for article_id in article_ids
+        ]
+
+        requested_indices = {
+            article_id: article_to_index.get(article_id)
+            for article_id in requested_ids
+        }
+
+        # --------------------------------------------------
+        # Score only requested candidates.
+        # --------------------------------------------------
+
+        scores: dict[int, float] = defaultdict(float)
+
+        avgdl = self.avg_document_length
+        k1 = self.k1
+        b = self.b
+
+        candidate_indices = {
+            index
+            for index in requested_indices.values()
+            if index is not None
+        }
+
+        for token, query_frequency in query_counts.items():
+
+            postings = self.inverted_index.get(
+                token
+            )
+
+            if postings is None:
+                continue
+
+            idf = self.idf.get(
+                token,
+                0.0,
+            )
+
+            for doc_index, term_frequency in postings.items():
+
+                if doc_index not in candidate_indices:
+                    continue
+
+                document_length = (
+                    self.document_lengths[
+                        doc_index
+                    ]
+                )
+
+                denominator = (
+                    term_frequency
+                    +
+                    k1
+                    *
+                    (
+                        1
+                        -
+                        b
+                        +
+                        b
+                        *
+                        (
+                            document_length
+                            /
+                            avgdl
+                        )
+                    )
+                )
+
+                contribution = (
+                    idf
+                    *
+                    (
+                        term_frequency
+                        *
+                        (k1 + 1)
+                    )
+                    /
+                    denominator
+                )
+
+                scores[doc_index] += (
+                    query_frequency
+                    * contribution
+                )
+
+        # --------------------------------------------------
+        # Preserve requested candidate order.
+        # --------------------------------------------------
+
+        return [
+            (
+                article_id,
+                float(
+                    scores.get(
+                        requested_indices[article_id],
+                        0.0,
+                    )
+                    if requested_indices[article_id]
+                    is not None
+                    else 0.0
+                ),
+            )
+            for article_id in requested_ids
+        ]
