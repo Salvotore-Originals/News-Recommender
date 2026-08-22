@@ -1,0 +1,3 @@
+split,impressions,hit_at_5,hit_at_10,mrr,mean_candidates,runtime_seconds
+train,100,0.47,0.87,0.2588124866040466,11.58,0.138178399996832
+validation,100,0.57,0.91,0.30498996265172723,10.11,0.11415039992425591
