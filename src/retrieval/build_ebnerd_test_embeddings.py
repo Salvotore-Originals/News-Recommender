@@ -8,14 +8,23 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer
 
 
-MODEL_NAME = "all-MiniLM-L6-v2"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-ARTICLES_PATH = Path(
-    "data/processed/mind_test/articles.parquet"
+ARTICLES_PATH = (
+    PROJECT_ROOT
+    / "data"
+    / "features"
+    / "ebnerd"
+    / "test"
+    / "articles.parquet"
 )
 
-OUTPUT_DIR = Path(
-    "data/features/mind_test/semantic"
+OUTPUT_DIR = (
+    PROJECT_ROOT
+    / "data"
+    / "embeddings"
+    / "ebnerd"
+    / "test"
 )
 
 EMBEDDINGS_PATH = (
@@ -30,42 +39,34 @@ METADATA_PATH = (
     OUTPUT_DIR / "metadata.json"
 )
 
+MODEL_NAME = "all-MiniLM-L6-v2"
 BATCH_SIZE = 32
 
 
 def main() -> None:
 
-    # --------------------------------------------------
-    # Prepare output directory
-    # --------------------------------------------------
+    print("=" * 80)
+    print("EB-NeRD OFFICIAL TEST — SEMANTIC EMBEDDINGS")
+    print("=" * 80)
 
     OUTPUT_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    # --------------------------------------------------
-    # Load articles
-    # --------------------------------------------------
-
-    print("=" * 70)
-    print("MIND SEMANTIC EMBEDDING BUILDER")
-    print("=" * 70)
-
-    print()
-    print("[1/5] Loading article feature store...")
+    print("\n[1/5] Loading test article features...")
 
     articles = pd.read_parquet(
         ARTICLES_PATH
     )
 
-    required_columns = {
+    required = {
         "article_id",
         "text",
     }
 
     missing = (
-        required_columns
+        required
         - set(articles.columns)
     )
 
@@ -85,26 +86,13 @@ def main() -> None:
         .astype(str)
     )
 
-    if (
-        articles["text"]
-        .str.strip()
-        .eq("")
-        .any()
-    ):
-        raise ValueError(
-            "Article text contains empty documents."
-        )
-
     print(
-        f"       Articles: {len(articles):,}"
+        f"       Articles: "
+        f"{len(articles):,}"
     )
 
-    # --------------------------------------------------
-    # Load model
-    # --------------------------------------------------
+    print("\n[2/5] Loading Sentence Transformer...")
 
-    print()
-    print("[2/5] Loading Sentence Transformer model...")
     print(
         f"       Model: {MODEL_NAME}"
     )
@@ -113,12 +101,8 @@ def main() -> None:
         MODEL_NAME
     )
 
-    # --------------------------------------------------
-    # Generate embeddings
-    # --------------------------------------------------
+    print("\n[3/5] Generating embeddings...")
 
-    print()
-    print("[3/5] Generating article embeddings...")
     print(
         f"       Batch size: {BATCH_SIZE}"
     )
@@ -128,7 +112,7 @@ def main() -> None:
         batch_size=BATCH_SIZE,
         show_progress_bar=True,
         convert_to_numpy=True,
-        normalize_embeddings=False,
+        normalize_embeddings=True,
     )
 
     embeddings = np.asarray(
@@ -136,24 +120,23 @@ def main() -> None:
         dtype=np.float32,
     )
 
-    # --------------------------------------------------
-    # Validate embeddings
-    # --------------------------------------------------
-
-    print()
-    print("[4/5] Validating embeddings...")
-
-    expected_rows = len(articles)
-
-    if embeddings.shape[0] != expected_rows:
-        raise RuntimeError(
-            "Embedding row count does not match "
-            "article count."
-        )
+    print("\n[4/5] Validating embeddings...")
 
     if embeddings.ndim != 2:
         raise RuntimeError(
-            "Embeddings must be a 2D matrix."
+            "Embeddings must be 2-dimensional."
+        )
+
+    if embeddings.shape[0] != len(articles):
+        raise RuntimeError(
+            "Embedding count does not match "
+            "article count."
+        )
+
+    if embeddings.shape[1] != 384:
+        raise RuntimeError(
+            f"Unexpected embedding dimension: "
+            f"{embeddings.shape[1]}"
         )
 
     if not np.all(
@@ -163,22 +146,15 @@ def main() -> None:
             "Embeddings contain non-finite values."
         )
 
-    embedding_dimension = embeddings.shape[1]
-
     print(
         f"       Shape: {embeddings.shape}"
     )
 
     print(
-        f"       Dimension: {embedding_dimension}"
+        f"       Dimension: {embeddings.shape[1]}"
     )
 
-    # --------------------------------------------------
-    # Save
-    # --------------------------------------------------
-
-    print()
-    print("[5/5] Saving semantic feature store...")
+    print("\n[5/5] Saving embeddings...")
 
     np.save(
         EMBEDDINGS_PATH,
@@ -187,15 +163,15 @@ def main() -> None:
 
     np.save(
         ARTICLE_IDS_PATH,
-        articles["article_id"]
-        .astype(str)
-        .to_numpy(dtype="U"),
+        articles["article_id"].to_numpy(
+            dtype=str
+        ),
     )
 
     metadata = {
         "model_name": MODEL_NAME,
         "embedding_dimension": int(
-            embedding_dimension
+            embeddings.shape[1]
         ),
         "article_count": int(
             len(articles)
@@ -203,7 +179,7 @@ def main() -> None:
         "text_field": "text",
         "batch_size": BATCH_SIZE,
         "dtype": "float32",
-        "normalized": False,
+        "normalized": True,
     }
 
     with open(
@@ -216,16 +192,15 @@ def main() -> None:
             metadata,
             file,
             indent=2,
-        )
+    )
 
     print()
-    print("=" * 70)
-    print("SEMANTIC EMBEDDING BUILD COMPLETE")
-    print("=" * 70)
+    print("=" * 80)
+    print("EB-NeRD TEST SEMANTIC EMBEDDINGS COMPLETE")
+    print("=" * 80)
 
-    print()
     print(
-        f"Embeddings: {EMBEDDINGS_PATH}"
+        f"\nEmbeddings: {EMBEDDINGS_PATH}"
     )
 
     print(

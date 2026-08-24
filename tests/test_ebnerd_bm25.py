@@ -220,3 +220,119 @@ def test_restricted_bm25_matches_full_corpus_scores():
             old_scores[article_id]
             - new_scores[article_id]
         ) < 1e-6
+
+def test_restricted_bm25_matches_full_bm25_on_real_impressions():
+
+    from src.retrieval.ebnerd_bm25 import (
+        build_bm25,
+        build_candidate_bm25_statistics,
+        build_history_lookup,
+        build_query_from_history,
+        load_articles,
+        load_history,
+        load_interactions,
+        score_candidates,
+        score_candidates_restricted,
+    )
+
+    articles = load_articles()
+
+    bm25, article_to_index = build_bm25(
+        articles
+    )
+
+    statistics = (
+        build_candidate_bm25_statistics(
+            articles
+        )
+    )
+
+    interactions = load_interactions(
+        "train"
+    )
+
+    history = load_history(
+        "train"
+    )
+
+    history_lookup = build_history_lookup(
+        history,
+        articles,
+    )
+
+    # Use the first 100 real impressions.
+    groups = interactions.groupby(
+        "impression_id",
+        sort=False,
+    )
+
+    checked = 0
+
+    for impression_id, group in groups:
+
+        if checked >= 100:
+            break
+
+        group = group.sort_values(
+            "article_id"
+        )
+
+        user_id = group.iloc[0]["user_id"]
+
+        impression_time = group.iloc[0][
+            "impression_time"
+        ]
+
+        candidates = (
+            group["article_id"].tolist()
+        )
+
+        user_history = history_lookup.get(
+            user_id,
+            [],
+        )
+
+        query_tokens = (
+            build_query_from_history(
+                user_history,
+                impression_time,
+            )
+        )
+
+        full_results = score_candidates(
+            bm25,
+            article_to_index,
+            query_tokens,
+            candidates,
+        )
+
+        restricted_results = (
+            score_candidates_restricted(
+                query_tokens,
+                candidates,
+                article_to_index,
+                statistics,
+            )
+        )
+
+        assert len(full_results) == len(
+            restricted_results
+        )
+
+        for (
+            full,
+            restricted,
+        ) in zip(
+            full_results,
+            restricted_results,
+        ):
+
+            assert full[0] == restricted[0]
+
+            assert abs(
+                full[1] - restricted[1]
+            ) < 1e-6
+
+        checked += 1
+
+    assert checked == 100

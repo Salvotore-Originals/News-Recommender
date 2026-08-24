@@ -47,6 +47,13 @@ class BM25Retriever:
         self.article_ids = list(article_ids)
         self.documents = list(documents)
 
+        
+        self.article_to_index = {
+            str(article_id): index
+            for index, article_id
+            in enumerate(self.article_ids)
+        }
+
         self.k1 = k1
         self.b = b
 
@@ -364,44 +371,11 @@ class BM25Retriever:
             in ranked_candidates
         ]
 
-        # ======================================================
-    # SCORE SPECIFIC CANDIDATES
-    # ======================================================
-
     def score_candidates(
         self,
         query: str,
         article_ids: Sequence[str],
     ) -> list[tuple[str, float]]:
-        """
-        Score a specified set of article candidates with BM25.
-
-        Unlike search(), this method does not perform candidate
-        retrieval. Every requested article receives a BM25 score.
-
-        This is useful for ranking experiments where an external
-        candidate set, such as the MIND impression candidates,
-        must be kept fixed.
-
-        Parameters
-        ----------
-        query:
-            Lexical query.
-
-        article_ids:
-            Article IDs that must be scored.
-
-        Returns
-        -------
-        list[tuple[str, float]]
-            Article ID and BM25 score for every requested
-            candidate, preserving the input order.
-
-        Notes
-        -----
-        Articles that contain none of the query terms receive
-        a score of 0.0.
-        """
 
         if not query or not query.strip():
             return [
@@ -427,15 +401,9 @@ class BM25Retriever:
             query_tokens
         )
 
-        # --------------------------------------------------
-        # Article ID -> document index
-        # --------------------------------------------------
-
-        article_to_index = {
-            str(article_id): index
-            for index, article_id
-            in enumerate(self.article_ids)
-        }
+    # --------------------------------------------------
+    # Article ID -> document index
+    # --------------------------------------------------
 
         requested_ids = [
             str(article_id)
@@ -443,13 +411,13 @@ class BM25Retriever:
         ]
 
         requested_indices = {
-            article_id: article_to_index.get(article_id)
+            article_id: self.article_to_index.get(article_id)
             for article_id in requested_ids
         }
 
-        # --------------------------------------------------
-        # Score only requested candidates.
-        # --------------------------------------------------
+    # --------------------------------------------------
+    # Score only requested candidates.
+    # --------------------------------------------------
 
         scores: dict[int, float] = defaultdict(float)
 
@@ -465,9 +433,7 @@ class BM25Retriever:
 
         for token, query_frequency in query_counts.items():
 
-            postings = self.inverted_index.get(
-                token
-            )
+            postings = self.inverted_index.get(token)
 
             if postings is None:
                 continue
@@ -483,9 +449,7 @@ class BM25Retriever:
                     continue
 
                 document_length = (
-                    self.document_lengths[
-                        doc_index
-                    ]
+                    self.document_lengths[doc_index]
                 )
 
                 denominator = (
@@ -495,26 +459,24 @@ class BM25Retriever:
                     *
                     (
                         1
-                        -
-                        b
+                        - b
                         +
                         b
                         *
                         (
                             document_length
-                            /
-                            avgdl
+                            / avgdl
                         )
                     )
                 )
+            
 
                 contribution = (
                     idf
                     *
                     (
                         term_frequency
-                        *
-                        (k1 + 1)
+                        * (k1 + 1)
                     )
                     /
                     denominator
@@ -525,9 +487,9 @@ class BM25Retriever:
                     * contribution
                 )
 
-        # --------------------------------------------------
-        # Preserve requested candidate order.
-        # --------------------------------------------------
+    # --------------------------------------------------
+    # Preserve requested candidate order.
+    # --------------------------------------------------
 
         return [
             (

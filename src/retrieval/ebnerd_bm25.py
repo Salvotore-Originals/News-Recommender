@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from math import log
 import re
@@ -127,6 +127,7 @@ def build_bm25(
 
 def build_candidate_bm25_statistics(
     articles: pd.DataFrame,
+    bm25=None,
 ):
     """
     Precompute the statistics required for candidate-restricted
@@ -162,57 +163,20 @@ def build_candidate_bm25_statistics(
         document_lengths.mean()
     )
 
-    document_frequency = defaultdict(int)
-
-    for tokens in tokenized_documents:
-
-        for token in set(tokens):
-
-            document_frequency[token] += 1
-
-    # --------------------------------------------------------------
-    # rank_bm25 uses:
-    #
-    # IDF = log((N - df + 0.5) / (df + 0.5))
-    #
-    # but clips negative values to epsilon * average_idf.
-    #
-    # We reproduce the same behavior so that our optimized scorer
-    # remains mathematically consistent with BM25Okapi.
-    # --------------------------------------------------------------
-
-    raw_idf = {}
-
-    for token, df in document_frequency.items():
-
-        raw_idf[token] = log(
-            (
-                document_count
-                - df
-                + 0.5
-            )
-            /
-            (
-                df
-                + 0.5
-            )
+    # Use the exact BM25Okapi IDF implementation.  The existing
+    # test calls this function with only `articles`, so construct a
+    # reference BM25 object when one was not supplied.
+    if bm25 is None:
+        bm25 = BM25Okapi(
+            tokenized_documents,
+            k1=K1,
+            b=B,
         )
 
-    average_idf = (
-        sum(raw_idf.values())
-        / max(len(raw_idf), 1)
-    )
-
-    epsilon = 0.25
-
-    idf = {}
-
-    for token, value in raw_idf.items():
-
-        idf[token] = max(
-            value,
-            epsilon * average_idf,
-        )
+    idf = {
+        token: float(value)
+        for token, value in bm25.idf.items()
+    }
 
     token_frequencies = []
 
@@ -243,13 +207,11 @@ def score_candidates_restricted(
     """
     Score ONLY the candidates in an EB-NeRD impression.
 
-    Uses the same BM25 parameters as BM25Okapi:
+    Uses the same corpus-level BM25 statistics as the
+    full BM25 scorer.
 
-        k1 = 1.5
-        b  = 0.75
-
-    Returns:
-        [(article_id, score), ...]
+    Candidate/article IDs are preserved in their original
+    type because EB-NeRD article IDs are integer identifiers.
     """
 
     if not candidate_ids:
@@ -285,6 +247,11 @@ def score_candidates_restricted(
         ]
     )
 
+    # BM25Okapi uses query-term frequency.
+    query_counts = Counter(
+        query_tokens
+    )
+
     scored = []
 
     for article_id in candidate_ids:
@@ -300,13 +267,15 @@ def score_candidates_restricted(
             document_lengths[index]
         )
 
-        frequencies = token_frequencies[
-            index
-        ]
+        frequencies = (
+            token_frequencies[index]
+        )
 
         score = 0.0
 
-        for token in query_tokens:
+        for token, query_frequency in (
+            query_counts.items()
+        ):
 
             token_idf = idf.get(
                 token,
@@ -337,6 +306,7 @@ def score_candidates_restricted(
 
             score += (
                 token_idf
+                * query_frequency
                 * frequency
                 * (K1 + 1.0)
                 / denominator
@@ -352,7 +322,7 @@ def score_candidates_restricted(
     scored.sort(
         key=lambda x: (
             -x[1],
-            str(x[0]),
+            x[0],
         )
     )
 
@@ -753,7 +723,8 @@ def main():
 
     bm25_statistics = (
         build_candidate_bm25_statistics(
-            articles
+            articles,
+            bm25,
         )
     )
 
