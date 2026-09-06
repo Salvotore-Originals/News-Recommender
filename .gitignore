@@ -1,7 +1,5 @@
 # Data
-data/raw/
-data/processed/
-data/features/
+data/
 
 # Python
 __pycache__/
@@ -37,3 +35,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Generated reports
+/News Recommender.pdf
