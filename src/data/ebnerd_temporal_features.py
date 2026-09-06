@@ -127,10 +127,16 @@ def prepare_history(
         errors="coerce",
     )
 
+    if result["timestamp"].isna().any():
+        raise ValueError(
+            "History contains invalid timestamps."
+        )
+
     result = result.sort_values(
         [
             "user_id",
             "timestamp",
+            "article_id",
         ]
     ).reset_index(drop=True)
 
@@ -159,7 +165,10 @@ def build_history_summary(
     # Number of previous interactions with the same category.
     history["category_count_before"] = (
         history.groupby(
-            ["user_id", "category_str"]
+            [
+                "user_id",
+                "category_str",
+            ]
         ).cumcount()
     )
 
@@ -175,10 +184,30 @@ def build_temporal_features(
 
     For every impression at time t, only history events with
     timestamp < t are allowed to contribute to the features.
+
+    Features include:
+
+    - historical interaction count
+    - category interaction count
+    - category preference
+    - mean historical read time
+    - mean historical scroll percentage
+    - category-specific mean read time
+    - category-specific mean scroll percentage
+    - candidate seen-before indicator
+    - candidate recency in hours
+
+    All historical features obey the strict temporal boundary:
+
+        history_timestamp < impression_time
     """
 
     interactions = interactions.copy()
     history = history.copy()
+
+    # --------------------------------------------------------------
+    # Validate and convert timestamps.
+    # --------------------------------------------------------------
 
     interactions["impression_time"] = pd.to_datetime(
         interactions["impression_time"],
@@ -190,29 +219,60 @@ def build_temporal_features(
         errors="coerce",
     )
 
+    if interactions["impression_time"].isna().any():
+        raise ValueError(
+            "Interactions contain invalid impression timestamps."
+        )
+
+    if history["timestamp"].isna().any():
+        raise ValueError(
+            "History contains invalid timestamps."
+        )
+
+    # --------------------------------------------------------------
+    # Optional engagement columns.
+    #
+    # Real EB-NeRD history contains these columns.
+    #
+    # The temporal leakage unit tests intentionally use minimal
+    # synthetic history tables, so the columns may be absent there.
+    #
+    # Missing columns are represented as NaN and therefore do not
+    # contribute to engagement aggregates.
+    # --------------------------------------------------------------
+
+    if "read_time" not in history.columns:
+        history["read_time"] = float("nan")
+
+    if "scroll_percentage" not in history.columns:
+        history["scroll_percentage"] = float("nan")
+
     # --------------------------------------------------------------
     # Sort chronologically.
     # --------------------------------------------------------------
 
     interactions = interactions.sort_values(
-        ["user_id", "impression_time", "impression_id", "article_id"]
+        [
+            "user_id",
+            "impression_time",
+            "impression_id",
+            "article_id",
+        ]
     ).reset_index(drop=True)
 
     history = history.sort_values(
-        ["user_id", "timestamp", "article_id"]
+        [
+            "user_id",
+            "timestamp",
+            "article_id",
+        ]
     ).reset_index(drop=True)
 
     # --------------------------------------------------------------
-    # We process each user independently.
+    # Process each user independently.
     #
-    # State maintained while moving forward in time:
-    #
-    #   total_history
-    #   category_counts
-    #   article_last_seen
-    #
-    # The state contains ONLY events strictly before the current
-    # impression.
+    # The state below contains ONLY historical events that have
+    # timestamp < the current impression timestamp.
     # --------------------------------------------------------------
 
     output_chunks = []
@@ -248,7 +308,10 @@ def build_temporal_features(
             user_history = history.iloc[0:0].copy()
 
         user_history = user_history.sort_values(
-            ["timestamp", "article_id"]
+            [
+                "timestamp",
+                "article_id",
+            ]
         )
 
         # ----------------------------------------------------------
@@ -261,6 +324,8 @@ def build_temporal_features(
                     "timestamp",
                     "article_id",
                     "category_str",
+                    "read_time",
+                    "scroll_percentage",
                 ]
             ].itertuples(
                 index=False,
@@ -270,11 +335,31 @@ def build_temporal_features(
 
         history_pointer = 0
 
+        # ----------------------------------------------------------
+        # Basic history state.
+        # ----------------------------------------------------------
+
         total_history = 0
 
         category_counts = {}
 
         article_last_seen = {}
+
+        # ----------------------------------------------------------
+        # Engagement state.
+        # ----------------------------------------------------------
+
+        total_read_time = 0.0
+        total_scroll_percentage = 0.0
+
+        read_time_event_count = 0
+        scroll_event_count = 0
+
+        category_read_time = {}
+        category_scroll_percentage = {}
+
+        category_read_time_count = {}
+        category_scroll_count = {}
 
         feature_rows = []
 
@@ -286,10 +371,18 @@ def build_temporal_features(
             index=False
         ):
 
-            impression_time = interaction.impression_time
+            impression_time = (
+                interaction.impression_time
+            )
 
             # ------------------------------------------------------
             # Add history events STRICTLY BEFORE impression time.
+            #
+            # IMPORTANT:
+            #
+            #     timestamp < impression_time
+            #
+            # Same-timestamp and future events are excluded.
             # ------------------------------------------------------
 
             while (
@@ -298,11 +391,20 @@ def build_temporal_features(
                     history_pointer
                 ][0] < impression_time
             ):
+
                 (
                     timestamp,
                     historical_article,
                     historical_category,
-                ) = history_records[history_pointer]
+                    historical_read_time,
+                    historical_scroll_percentage,
+                ) = history_records[
+                    history_pointer
+                ]
+
+                # --------------------------------------------------
+                # Basic history statistics.
+                # --------------------------------------------------
 
                 total_history += 1
 
@@ -316,17 +418,103 @@ def build_temporal_features(
                     + 1
                 )
 
+                # --------------------------------------------------
+                # Candidate last-seen state.
+                # --------------------------------------------------
+
                 article_last_seen[
                     historical_article
                 ] = timestamp
 
+                # --------------------------------------------------
+                # Read-time engagement.
+                # --------------------------------------------------
+
+                if pd.notna(
+                    historical_read_time
+                ):
+
+                    read_time = float(
+                        historical_read_time
+                    )
+
+                    total_read_time += read_time
+
+                    read_time_event_count += 1
+
+                    category_read_time[
+                        historical_category
+                    ] = (
+                        category_read_time.get(
+                            historical_category,
+                            0.0,
+                        )
+                        + read_time
+                    )
+
+                    category_read_time_count[
+                        historical_category
+                    ] = (
+                        category_read_time_count.get(
+                            historical_category,
+                            0,
+                        )
+                        + 1
+                    )
+
+                # --------------------------------------------------
+                # Scroll engagement.
+                # --------------------------------------------------
+
+                if pd.notna(
+                    historical_scroll_percentage
+                ):
+
+                    scroll_percentage = float(
+                        historical_scroll_percentage
+                    )
+
+                    total_scroll_percentage += (
+                        scroll_percentage
+                    )
+
+                    scroll_event_count += 1
+
+                    category_scroll_percentage[
+                        historical_category
+                    ] = (
+                        category_scroll_percentage.get(
+                            historical_category,
+                            0.0,
+                        )
+                        + scroll_percentage
+                    )
+
+                    category_scroll_count[
+                        historical_category
+                    ] = (
+                        category_scroll_count.get(
+                            historical_category,
+                            0,
+                        )
+                        + 1
+                    )
+
+                # --------------------------------------------------
+                # Advance history pointer.
+                # --------------------------------------------------
+
                 history_pointer += 1
+
+            # ------------------------------------------------------
+            # Candidate category.
+            # ------------------------------------------------------
+
+            category = interaction.category_str
 
             # ------------------------------------------------------
             # Category preference.
             # ------------------------------------------------------
-
-            category = interaction.category_str
 
             category_count = category_counts.get(
                 category,
@@ -339,6 +527,78 @@ def build_temporal_features(
             )
 
             # ------------------------------------------------------
+            # Point-in-time user engagement.
+            # ------------------------------------------------------
+
+            if read_time_event_count:
+
+                mean_read_time_before = (
+                    total_read_time
+                    / read_time_event_count
+                )
+
+            else:
+
+                mean_read_time_before = 0.0
+
+            if scroll_event_count:
+
+                mean_scroll_percentage_before = (
+                    total_scroll_percentage
+                    / scroll_event_count
+                )
+
+            else:
+
+                mean_scroll_percentage_before = 0.0
+
+            # ------------------------------------------------------
+            # Point-in-time category engagement.
+            # ------------------------------------------------------
+
+            category_read_count = (
+                category_read_time_count.get(
+                    category,
+                    0,
+                )
+            )
+
+            if category_read_count:
+
+                category_mean_read_time_before = (
+                    category_read_time.get(
+                        category,
+                        0.0,
+                    )
+                    / category_read_count
+                )
+
+            else:
+
+                category_mean_read_time_before = 0.0
+
+            category_scroll_count_value = (
+                category_scroll_count.get(
+                    category,
+                    0,
+                )
+            )
+
+            if category_scroll_count_value:
+
+                category_mean_scroll_percentage_before = (
+                    category_scroll_percentage.get(
+                        category,
+                        0.0,
+                    )
+                    / category_scroll_count_value
+                )
+
+            else:
+
+                category_mean_scroll_percentage_before = 0.0
+
+            # ------------------------------------------------------
             # Candidate previously seen?
             # ------------------------------------------------------
 
@@ -349,10 +609,15 @@ def build_temporal_features(
             )
 
             if last_seen is None:
+
                 candidate_seen_before = 0
-                candidate_recency_hours = float("inf")
+
+                candidate_recency_hours = float(
+                    "inf"
+                )
 
             else:
+
                 candidate_seen_before = 1
 
                 candidate_recency_hours = (
@@ -363,21 +628,63 @@ def build_temporal_features(
                     / 3600.0
                 )
 
+            # ------------------------------------------------------
+            # Store candidate-level feature row.
+            # ------------------------------------------------------
+
             feature_rows.append(
                 {
-                    "impression_id": interaction.impression_id,
-                    "user_id": interaction.user_id,
-                    "article_id": interaction.article_id,
-                    "impression_time": impression_time,
-                    "clicked": interaction.clicked,
-                    "session_id": interaction.session_id,
-                    "category": interaction.category,
-                    "category_str": category,
-                    "category_count_before": category_count,
-                    "history_count_before": total_history,
-                    "category_preference": category_preference,
-                    "candidate_seen_before": candidate_seen_before,
-                    "candidate_recency_hours": candidate_recency_hours,
+                    "impression_id": (
+                        interaction.impression_id
+                    ),
+                    "user_id": (
+                        interaction.user_id
+                    ),
+                    "article_id": (
+                        interaction.article_id
+                    ),
+                    "impression_time": (
+                        impression_time
+                    ),
+                    "clicked": (
+                        interaction.clicked
+                    ),
+                    "session_id": (
+                        interaction.session_id
+                    ),
+                    "category": (
+                        interaction.category
+                    ),
+                    "category_str": (
+                        category
+                    ),
+                    "category_count_before": (
+                        category_count
+                    ),
+                    "history_count_before": (
+                        total_history
+                    ),
+                    "category_preference": (
+                        category_preference
+                    ),
+                    "mean_read_time_before": (
+                        mean_read_time_before
+                    ),
+                    "mean_scroll_percentage_before": (
+                        mean_scroll_percentage_before
+                    ),
+                    "category_mean_read_time_before": (
+                        category_mean_read_time_before
+                    ),
+                    "category_mean_scroll_percentage_before": (
+                        category_mean_scroll_percentage_before
+                    ),
+                    "candidate_seen_before": (
+                        candidate_seen_before
+                    ),
+                    "candidate_recency_hours": (
+                        candidate_recency_hours
+                    ),
                 }
             )
 
@@ -421,10 +728,15 @@ def build_temporal_features(
             "category_count_before",
             "history_count_before",
             "category_preference",
+            "mean_read_time_before",
+            "mean_scroll_percentage_before",
+            "category_mean_read_time_before",
+            "category_mean_scroll_percentage_before",
             "candidate_seen_before",
             "candidate_recency_hours",
         ]
     ]
+
 
 def process_split(
     interactions: pd.DataFrame,
@@ -505,7 +817,9 @@ def main() -> None:
         "validation",
     )
 
-    print("\nTemporal feature construction complete.")
+    print(
+        "\nTemporal feature construction complete."
+    )
 
 
 if __name__ == "__main__":
