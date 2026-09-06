@@ -329,7 +329,7 @@ def test_ebnerd_future_candidate_occurrence_is_not_seen():
     Expected:
 
         candidate_seen_before = 0
-        candidate_recency_hours = inf
+        candidate_recency_hours = 0.0
     """
 
     interactions = pd.DataFrame(
@@ -366,7 +366,7 @@ def test_ebnerd_future_candidate_occurrence_is_not_seen():
     row = result.iloc[0]
 
     assert row["candidate_seen_before"] == 0
-    assert row["candidate_recency_hours"] == float("inf")
+    assert row["candidate_recency_hours"] == 0.0
 
 
 # =====================================================================

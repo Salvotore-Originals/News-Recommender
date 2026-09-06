@@ -612,9 +612,11 @@ def build_temporal_features(
 
                 candidate_seen_before = 0
 
-                candidate_recency_hours = float(
-                    "inf"
-                )
+                # A candidate that has never appeared in the
+                # user's history has no meaningful elapsed time.
+                # Use 0.0 and rely on candidate_seen_before to
+                # distinguish "unseen" from a real recency value.
+                candidate_recency_hours = 0.0
 
             else:
 
