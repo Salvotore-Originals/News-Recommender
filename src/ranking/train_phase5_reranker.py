@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from html import parser
 import json
 import random
 from pathlib import Path
@@ -30,7 +29,7 @@ def set_seed(seed: int) -> None:
 
 
 def make_subset(dataset, max_rows: int | None, seed: int):
-    """Return the full dataset or a deterministic subset."""
+    """Return the full dataset or a deterministic row-level subset."""
     if max_rows is None:
         return dataset
 
@@ -41,10 +40,15 @@ def make_subset(dataset, max_rows: int | None, seed: int):
         return dataset
 
     rng = np.random.default_rng(seed)
-    indices = rng.choice(len(dataset), size=max_rows, replace=False)
+    indices = rng.choice(
+        len(dataset),
+        size=max_rows,
+        replace=False,
+    )
     indices = np.sort(indices)
 
     return Subset(dataset, indices.tolist())
+
 
 def make_impression_subset(
     dataset,
@@ -92,20 +96,59 @@ def make_impression_subset(
 
     return Subset(dataset, row_indices)
 
-def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+
+def count_impressions(dataset) -> int:
+    """Count unique impressions in a full dataset or Subset."""
+    if isinstance(dataset, Subset):
+        base_dataset = dataset.dataset
+        indices = dataset.indices
+
+        return int(
+            base_dataset.candidates.iloc[indices][
+                "impression_id"
+            ].nunique()
+        )
+
+    return int(
+        dataset.candidates["impression_id"].nunique()
+    )
+
+
+def collate_batch(
+    batch: list[dict[str, torch.Tensor]],
+) -> dict[str, torch.Tensor]:
     """Stack dataset samples into a training batch."""
     return {
         "history_article_ids": torch.stack(
-            [item["history_article_ids"] for item in batch]
+            [
+                item["history_article_ids"]
+                for item in batch
+            ]
         ),
         "candidate_article_id": torch.stack(
-            [item["candidate_article_id"] for item in batch]
+            [
+                item["candidate_article_id"]
+                for item in batch
+            ]
         ),
         "retrieval_features": torch.stack(
-            [item["retrieval_features"] for item in batch]
+            [
+                item["retrieval_features"]
+                for item in batch
+            ]
         ),
-        "clicked": torch.stack([item["clicked"] for item in batch]),
-        "user_id": torch.stack([item["user_id"] for item in batch]),
+        "clicked": torch.stack(
+            [
+                item["clicked"]
+                for item in batch
+            ]
+        ),
+        "user_id": torch.stack(
+            [
+                item["user_id"]
+                for item in batch
+            ]
+        ),
     }
 
 
@@ -171,7 +214,9 @@ def run_epoch(
         total_examples += batch_size
 
     if total_examples == 0:
-        raise RuntimeError("The DataLoader produced zero examples.")
+        raise RuntimeError(
+            "The DataLoader produced zero examples."
+        )
 
     return total_loss / total_examples
 
@@ -202,7 +247,9 @@ def save_checkpoint(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train the Phase 5.2 neural re-ranker on EB-NeRD."
+        description=(
+            "Train the Phase 5.2 neural re-ranker on EB-NeRD."
+        )
     )
 
     parser.add_argument(
@@ -215,14 +262,40 @@ def parse_args() -> argparse.Namespace:
         "--train-rows",
         type=int,
         default=5000,
-        help="Maximum number of training rows. Use 0 for all rows.",
+        help=(
+            "Maximum number of training rows. "
+            "Use 0 for all rows."
+        ),
     )
 
     parser.add_argument(
         "--validation-rows",
         type=int,
         default=2000,
-        help="Maximum number of validation rows. Use 0 for all rows.",
+        help=(
+            "Maximum number of validation rows. "
+            "Use 0 for all rows."
+        ),
+    )
+
+    parser.add_argument(
+        "--train-impressions",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of complete training impressions. "
+            "Overrides --train-rows when provided."
+        ),
+    )
+
+    parser.add_argument(
+        "--validation-impressions",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of complete validation impressions. "
+            "Overrides --validation-rows when provided."
+        ),
     )
 
     parser.add_argument(
@@ -271,7 +344,10 @@ def parse_args() -> argparse.Namespace:
         "--num-workers",
         type=int,
         default=0,
-        help="DataLoader workers. Keep 0 for the first Windows smoke test.",
+        help=(
+            "DataLoader workers. Keep 0 for the first "
+            "Windows smoke test."
+        ),
     )
 
     parser.add_argument(
@@ -283,38 +359,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Run a tiny controlled smoke-training configuration.",
+        help=(
+            "Run a tiny controlled smoke-training configuration."
+        ),
     )
 
     return parser.parse_args()
 
-    parser.add_argument(
-        "--train-impressions",
-        type=int,
-        default=None,
-        help=(
-            "Maximum number of complete training impressions. "
-            "Overrides --train-rows when provided."
-        ),
-    )   
 
-    parser.add_argument(
-        "--validation-impressions",
-        type=int,
-        default=None,
-        help=(
-            "Maximum number of complete validation impressions. "
-            "Overrides --validation-rows when provided."
-        ),
-    )
-
-def apply_smoke_settings(args: argparse.Namespace) -> argparse.Namespace:
+def apply_smoke_settings(
+    args: argparse.Namespace,
+) -> argparse.Namespace:
     """Apply intentionally small settings for the smoke test."""
     if not args.smoke:
         return args
 
     args.train_rows = 1000
     args.validation_rows = 500
+
+    # Explicitly disable impression-based selection in smoke mode.
+    args.train_impressions = None
+    args.validation_impressions = None
+
     args.epochs = 1
     args.batch_size = 32
     args.embedding_dim = 32
@@ -330,16 +396,40 @@ def main() -> None:
     args = apply_smoke_settings(args)
 
     if args.epochs <= 0:
-        raise ValueError("--epochs must be positive.")
+        raise ValueError(
+            "--epochs must be positive."
+        )
 
     if args.batch_size <= 0:
-        raise ValueError("--batch-size must be positive.")
+        raise ValueError(
+            "--batch-size must be positive."
+        )
 
     if args.learning_rate <= 0:
-        raise ValueError("--learning-rate must be positive.")
+        raise ValueError(
+            "--learning-rate must be positive."
+        )
 
     if args.max_history_length <= 0:
-        raise ValueError("--max-history-length must be positive.")
+        raise ValueError(
+            "--max-history-length must be positive."
+        )
+
+    if (
+        args.train_impressions is not None
+        and args.train_impressions <= 0
+    ):
+        raise ValueError(
+            "--train-impressions must be positive."
+        )
+
+    if (
+        args.validation_impressions is not None
+        and args.validation_impressions <= 0
+    ):
+        raise ValueError(
+            "--validation-impressions must be positive."
+        )
 
     if args.train_rows == 0:
         args.train_rows = None
@@ -359,6 +449,11 @@ def main() -> None:
     print(f"Seed:                {args.seed}")
     print(f"Train rows:          {args.train_rows}")
     print(f"Validation rows:     {args.validation_rows}")
+    print(f"Train impressions:   {args.train_impressions}")
+    print(
+        f"Validation impressions: "
+        f"{args.validation_impressions}"
+    )
     print(f"Epochs:              {args.epochs}")
     print(f"Batch size:          {args.batch_size}")
     print(f"Learning rate:       {args.learning_rate}")
@@ -368,33 +463,52 @@ def main() -> None:
     print(f"Smoke mode:          {args.smoke}")
     print()
 
-    print("[1/6] Loading Phase 5.2 training dataset...")
+    print(
+        "[1/6] Loading Phase 5.2 training dataset..."
+    )
+
     train_dataset, article_mapping = load_phase5_dataset(
         project_root=args.project_root,
         split="train",
         max_history_length=args.max_history_length,
     )
 
-    print(f"       Full train rows: {len(train_dataset):,}")
-    print(f"       Articles:        {len(article_mapping):,}")
+    print(
+        f"       Full train rows: "
+        f"{len(train_dataset):,}"
+    )
+
+    print(
+        f"       Articles:        "
+        f"{len(article_mapping):,}"
+    )
 
     print()
-    print("[2/6] Loading Phase 5.2 validation dataset...")
+    print(
+        "[2/6] Loading Phase 5.2 validation dataset..."
+    )
+
     validation_dataset, _ = load_phase5_dataset(
         project_root=args.project_root,
         split="validation",
         max_history_length=args.max_history_length,
     )
 
-    print(f"       Full validation rows: {len(validation_dataset):,}")
+    print(
+        f"       Full validation rows: "
+        f"{len(validation_dataset):,}"
+    )
 
+    # --------------------------------------------------------------
+    # Select complete impressions when requested.
+    # Otherwise retain the original row-level selection behaviour.
+    # --------------------------------------------------------------
     if args.train_impressions is not None:
         train_dataset = make_impression_subset(
             train_dataset,
             args.train_impressions,
             args.seed,
         )
-    
     else:
         train_dataset = make_subset(
             train_dataset,
@@ -408,7 +522,6 @@ def main() -> None:
             args.validation_impressions,
             args.seed + 1,
         )
-    
     else:
         validation_dataset = make_subset(
             validation_dataset,
@@ -416,9 +529,34 @@ def main() -> None:
             args.seed + 1,
         )
 
+    train_impression_count = count_impressions(
+        train_dataset
+    )
+
+    validation_impression_count = count_impressions(
+        validation_dataset
+    )
+
     print()
-    print(f"       Selected train rows:      {len(train_dataset):,}")
-    print(f"       Selected validation rows: {len(validation_dataset):,}")
+    print(
+        f"       Selected train rows:      "
+        f"{len(train_dataset):,}"
+    )
+
+    print(
+        f"       Selected validation rows: "
+        f"{len(validation_dataset):,}"
+    )
+
+    print(
+        f"       Train impressions:         "
+        f"{train_impression_count:,}"
+    )
+
+    print(
+        f"       Validation impressions:    "
+        f"{validation_impression_count:,}"
+    )
 
     train_loader = build_loader(
         train_dataset,
@@ -435,7 +573,9 @@ def main() -> None:
     )
 
     print()
-    print("[3/6] Building Phase 5.2 model...")
+    print(
+        "[3/6] Building Phase 5.2 model..."
+    )
 
     model = Phase5Reranker(
         num_articles=len(article_mapping),
@@ -452,7 +592,10 @@ def main() -> None:
         if parameter.requires_grad
     )
 
-    print(f"       Trainable parameters: {parameter_count:,}")
+    print(
+        f"       Trainable parameters: "
+        f"{parameter_count:,}"
+    )
 
     criterion = nn.BCEWithLogitsLoss()
 
@@ -470,10 +613,14 @@ def main() -> None:
     history = []
 
     checkpoint_path = (
-        args.output_dir / "phase5_reranker_best.pt"
+        args.output_dir
+        / "phase5_reranker_best.pt"
     )
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(
+        1,
+        args.epochs + 1,
+    ):
         train_loss = run_epoch(
             model=model,
             loader=train_loader,
@@ -518,18 +665,30 @@ def main() -> None:
                 args=args,
             )
 
-            print(f"             New best checkpoint: {checkpoint_path}")
+            print(
+                f"             New best checkpoint: "
+                f"{checkpoint_path}"
+            )
 
     print("-" * 70)
 
-    metrics_path = args.output_dir / "phase5_reranker_training_metrics.json"
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path = (
+        args.output_dir
+        / "phase5_reranker_training_metrics.json"
+    )
+
+    metrics_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     metrics = {
         "device": str(device),
         "seed": args.seed,
         "train_rows": len(train_dataset),
         "validation_rows": len(validation_dataset),
+        "train_impressions": train_impression_count,
+        "validation_impressions": validation_impression_count,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
@@ -543,18 +702,32 @@ def main() -> None:
         "history": history,
     }
 
-    with metrics_path.open("w", encoding="utf-8") as handle:
-        json.dump(metrics, handle, indent=2)
+    with metrics_path.open(
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        json.dump(
+            metrics,
+            handle,
+            indent=2,
+        )
 
     print()
     print("[5/6] Saved training artifacts")
-    print(f"       Best checkpoint: {checkpoint_path}")
-    print(f"       Metrics:         {metrics_path}")
+    print(
+        f"       Best checkpoint: "
+        f"{checkpoint_path}"
+    )
+    print(
+        f"       Metrics:         "
+        f"{metrics_path}"
+    )
 
     print()
-    print("[6/6] Training smoke test complete")
+    print("[6/6] Training complete")
     print("=" * 70)
 
 
 if __name__ == "__main__":
     main()
+
