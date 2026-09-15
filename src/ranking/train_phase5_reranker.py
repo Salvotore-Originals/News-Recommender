@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from html import parser
 import json
 import random
 from pathlib import Path
@@ -45,6 +46,51 @@ def make_subset(dataset, max_rows: int | None, seed: int):
 
     return Subset(dataset, indices.tolist())
 
+def make_impression_subset(
+    dataset,
+    max_impressions: int | None,
+    seed: int,
+):
+    """Return a deterministic subset containing complete impressions."""
+    if max_impressions is None:
+        return dataset
+
+    if max_impressions <= 0:
+        raise ValueError(
+            "max_impressions must be positive when provided."
+        )
+
+    # EBNeRDPhase5Dataset stores the original candidate table.
+    impression_ids = dataset.candidates[
+        "impression_id"
+    ].drop_duplicates().to_numpy()
+
+    if max_impressions >= len(impression_ids):
+        return dataset
+
+    rng = np.random.default_rng(seed)
+
+    selected = rng.choice(
+        impression_ids,
+        size=max_impressions,
+        replace=False,
+    )
+
+    selected = np.sort(selected)
+
+    selected_set = set(
+        int(impression_id)
+        for impression_id in selected
+    )
+
+    row_indices = [
+        index
+        for index, impression_id
+        in enumerate(dataset.candidates["impression_id"])
+        if int(impression_id) in selected_set
+    ]
+
+    return Subset(dataset, row_indices)
 
 def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     """Stack dataset samples into a training batch."""
@@ -242,6 +288,25 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
+    parser.add_argument(
+        "--train-impressions",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of complete training impressions. "
+            "Overrides --train-rows when provided."
+        ),
+    )   
+
+    parser.add_argument(
+        "--validation-impressions",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of complete validation impressions. "
+            "Overrides --validation-rows when provided."
+        ),
+    )
 
 def apply_smoke_settings(args: argparse.Namespace) -> argparse.Namespace:
     """Apply intentionally small settings for the smoke test."""
@@ -323,17 +388,33 @@ def main() -> None:
 
     print(f"       Full validation rows: {len(validation_dataset):,}")
 
-    train_dataset = make_subset(
-        train_dataset,
-        args.train_rows,
-        args.seed,
-    )
+    if args.train_impressions is not None:
+        train_dataset = make_impression_subset(
+            train_dataset,
+            args.train_impressions,
+            args.seed,
+        )
+    
+    else:
+        train_dataset = make_subset(
+            train_dataset,
+            args.train_rows,
+            args.seed,
+        )
 
-    validation_dataset = make_subset(
-        validation_dataset,
-        args.validation_rows,
-        args.seed + 1,
-    )
+    if args.validation_impressions is not None:
+        validation_dataset = make_impression_subset(
+            validation_dataset,
+            args.validation_impressions,
+            args.seed + 1,
+        )
+    
+    else:
+        validation_dataset = make_subset(
+            validation_dataset,
+            args.validation_rows,
+            args.seed + 1,
+        )
 
     print()
     print(f"       Selected train rows:      {len(train_dataset):,}")
